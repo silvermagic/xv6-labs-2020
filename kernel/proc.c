@@ -20,6 +20,7 @@ static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
+extern pagetable_t kernel_pagetable; // vm.c
 
 // initialize the proc table at boot time.
 void
@@ -121,6 +122,9 @@ found:
     return 0;
   }
 
+  // 为进程创建用户内核页表
+  p->kpagetable = setupkvm();
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -142,6 +146,8 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  if(p->kpagetable)
+    kvmfree(p->kpagetable, p->sz);
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -230,6 +236,9 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+  // 将用户进程地址空间映射到用户内核页表当中
+  setupuvm2kvm(p->pagetable, p->kpagetable, p->sz, 0);
+
   release(&p->lock);
 }
 
@@ -249,7 +258,10 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+  // 将用户进程地址空间映射到用户内核页表当中
+  setupuvm2kvm(p->pagetable, p->kpagetable, sz, p->sz);
   p->sz = sz;
+
   return 0;
 }
 
@@ -294,6 +306,9 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  // 将用户进程地址空间映射到用户内核页表当中
+  setupuvm2kvm(np->pagetable, np->kpagetable, np->sz, 0);
 
   release(&np->lock);
 
@@ -473,7 +488,9 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        swtchkpt(p->kpagetable);
         swtch(&c->context, &p->context);
+        swtchkpt(kernel_pagetable);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -696,4 +713,10 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+void
+swtchkpt(pagetable_t kpagetable){
+  w_satp(MAKE_SATP(kpagetable));
+  sfence_vma();
 }

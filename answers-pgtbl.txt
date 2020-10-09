@@ -1,0 +1,2 @@
+// srcva + len < srcva就是用来判断是否因为len过大导致溢出的
+"srcva + len <srcva" is used to judge whether the overlap is caused by too large length
