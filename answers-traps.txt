@@ -1,0 +1,24 @@
+1. Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+x10-x17
+a2
+
+2. Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.)
+0x0000000000000026: 45b1                	li	a1,12
+0x0000000000000014:	250d                	addiw	a0,a0,3
+
+3. At what address is the function printf located?
+0x0000000000000640 <printf>:
+
+4. What value is in the register ra just after the jalr to printf in main?
+0x0000000000000038
+
+5.1 What is the output?
+He110 World
+
+5.2 If the RISC-V were instead big-endian what would you set i to in order to yield the same output? Would you need to change 57616 to a different value?
+0x726c6400
+no need
+
+6. In the following code, what is going to be printed after 'y='? (note: the answer is not a specific value.) Why does this happen?
+Contents of register a2
+If argument i < 8 it is passed in integer register ai.
