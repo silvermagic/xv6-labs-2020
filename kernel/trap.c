@@ -15,6 +15,7 @@ extern char trampoline[], uservec[], userret[];
 void kernelvec();
 
 extern int devintr();
+extern pagetable_t kernel_pagetable;
 
 void
 trapinit(void)
@@ -70,15 +71,28 @@ usertrap(void)
     // ok
   } else if (scause == 13 || scause == 15) {
     uint64 vaddr = r_stval();
-    vaddr = PGROUNDDOWN(vaddr);
-    char *mem = kalloc();
-    if(mem == 0)
-      p->killed = 1;
-    memset(mem, 0, PGSIZE);
-    if(mappages(p->pagetable, vaddr, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
-      kfree(mem);
-      p->killed = 1;
-    }
+    do {
+      if (vaddr > p->sz) {
+        p->killed = 1;
+        break;
+      }
+      if (vaddr > (p->sz - 2 * PGSIZE) && vaddr < (p->sz - PGSIZE)) {
+        p->killed = 1;
+        break;
+      }
+      vaddr = PGROUNDDOWN(vaddr);
+      char *mem = kalloc();
+      if(mem == 0) {
+        p->killed = 1;
+        break;
+      }
+      memset(mem, 0, PGSIZE);
+      if(mappages(p->pagetable, vaddr, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+        kfree(mem);
+        p->killed = 1;
+        break;
+      }
+    } while (0);
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -156,6 +170,8 @@ kerneltrap()
     panic("kerneltrap: interrupts enabled");
 
   if((which_dev = devintr()) == 0){
+    if (scause == 15)
+      exit(-1);
     printf("scause %p\n", scause);
     printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
     panic("kerneltrap");
