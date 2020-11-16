@@ -2,7 +2,9 @@
 #include "types.h"
 #include "memlayout.h"
 #include "elf.h"
+#include "spinlock.h"
 #include "riscv.h"
+#include "proc.h"
 #include "defs.h"
 #include "fs.h"
 
@@ -15,12 +17,19 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+struct {
+  struct spinlock lock;
+  int mem_map[(PHYSTOP - KERNBASE) >> PGSHIFT];
+} umem;
+
 /*
  * create a direct-map page table for the kernel.
  */
 void
 kvminit()
 {
+  initlock(&umem.lock, "umem");
+
   kernel_pagetable = (pagetable_t) kalloc();
   memset(kernel_pagetable, 0, PGSIZE);
 
@@ -158,6 +167,14 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
       return -1;
     if(*pte & PTE_V)
       panic("remap");
+    if (perm & PTE_COW) {
+      acquire(&umem.lock);
+      if (umem.mem_map[(pa - KERNBASE) >> PGSHIFT] == 0)
+        umem.mem_map[(pa - KERNBASE) >> PGSHIFT] += 2;
+      else
+        umem.mem_map[(pa - KERNBASE) >> PGSHIFT] += 1;
+      release(&umem.lock);
+    }
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;
@@ -186,12 +203,64 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
-    if(do_free){
-      uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+    uint64 pa = PTE2PA(*pte);
+    if (do_free) {
+      if (*pte & PTE_COW) {
+        acquire(&umem.lock);
+        if (--umem.mem_map[(pa - KERNBASE) >> PGSHIFT] == 0)
+          kfree((void*)pa);
+        release(&umem.lock);
+      } else
+        kfree((void*)pa);
     }
     *pte = 0;
   }
+}
+
+int
+uvmremap(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+
+  if((va % PGSIZE) != 0)
+    panic("uvmremap: not aligned");
+
+  if(va >= MAXVA)
+    return -1;
+
+  if((pte = walk(pagetable, va, 0)) == 0)
+    panic("uvmremap: walk");
+  if((*pte & PTE_V) == 0)
+    panic("uvmremap: not mapped");
+  if((*pte & PTE_COW) == 0)
+    panic("uvmremap: not copy-on-write");
+  if(PTE_FLAGS(*pte) == PTE_V)
+    panic("uvmremap: not a leaf");
+  if((*pte & PTE_U) == 0)
+    return -1;
+
+  uint64 pa = PTE2PA(*pte);
+  acquire(&umem.lock);
+  char *mem;
+  if (umem.mem_map[(pa - KERNBASE) >> PGSHIFT] > 1) {
+    if((mem = kalloc()) == 0)
+      goto err;
+    memmove(mem, (void*)pa, PGSIZE);
+  } else if (umem.mem_map[(pa - KERNBASE) >> PGSHIFT] == 1) {
+    mem = (char *)pa;
+  } else
+    goto err;
+  uint64 perm = PTE_FLAGS(*pte);
+  perm &= ~PTE_COW;
+  perm |= PTE_W;
+  *pte = PA2PTE(mem) | perm;
+  umem.mem_map[(pa - KERNBASE) >> PGSHIFT]--;
+  release(&umem.lock);
+  return 0;
+
+err:
+  release(&umem.lock);
+  return -1;
 }
 
 // create an empty user page table.
@@ -310,8 +379,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,14 +386,10 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    *pte &= ~PTE_W;
+    *pte |= PTE_COW;
+    if (mappages(new, i, PGSIZE, (uint64) pa, PTE_FLAGS(*pte)) != 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
   }
   return 0;
 
@@ -358,6 +421,15 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if (va0 > MAXVA)
+      return -1;
+    pte_t *pte = walk(pagetable, va0, 0);
+    if (pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_COW) && (uvmremap(pagetable, va0) != 0))
+      return -1;
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
