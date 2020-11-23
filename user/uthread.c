@@ -10,15 +10,49 @@
 #define STACK_SIZE  8192
 #define MAX_THREAD  4
 
+// Saved registers for kernel context switches.
+struct context {
+    uint64 ra;
+    uint64 sp;
+
+    // callee-saved
+    uint64 s0;
+    uint64 s1;
+    uint64 s2;
+    uint64 s3;
+    uint64 s4;
+    uint64 s5;
+    uint64 s6;
+    uint64 s7;
+    uint64 s8;
+    uint64 s9;
+    uint64 s10;
+    uint64 s11;
+};
 
 struct thread {
+  struct context context;
   char       stack[STACK_SIZE]; /* the thread's stack */
   int        state;             /* FREE, RUNNING, RUNNABLE */
-
 };
 struct thread all_thread[MAX_THREAD];
 struct thread *current_thread;
 extern void thread_switch(uint64, uint64);
+
+void trace() {
+  printf("trace begin\n");
+  for(int i = 0; i < MAX_THREAD; i++){
+    if (all_thread[i].state != FREE)
+    {
+      struct context *ctx = &all_thread[i].context;
+      printf("context:\n"
+             "ra %p sp %p s0 %p s1 %p  s2 %p  s3 %p s4 %p s5 %p\n"
+             "s6 %p s7 %p s8 %p s9 %p s10 %p s11 %p s  %p\n",
+             ctx->ra, ctx->sp, ctx->s0, ctx->s1, ctx->s2, ctx->s3, ctx->s4, ctx->s5, ctx->s6, ctx->s7, ctx->s8, ctx->s9, ctx->s10, ctx->s11, all_thread[i].state);
+    }
+  }
+  printf("trace finish\n");
+}
               
 void 
 thread_init(void)
@@ -63,6 +97,7 @@ thread_schedule(void)
      * Invoke thread_switch to switch from t to next_thread:
      * thread_switch(??, ??);
      */
+    thread_switch((uint64)&t->context, (uint64)&current_thread->context);
   } else
     next_thread = 0;
 }
@@ -77,6 +112,9 @@ thread_create(void (*func)())
   }
   t->state = RUNNABLE;
   // YOUR CODE HERE
+  memset(&t->context, 0, sizeof(struct context));
+  t->context.ra = (uint64)func;
+  t->context.sp = (uint64)t->stack + STACK_SIZE;
 }
 
 void 
