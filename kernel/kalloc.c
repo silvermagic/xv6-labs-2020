@@ -7,6 +7,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "riscv.h"
+#include "proc.h"
 #include "defs.h"
 
 void freerange(void *pa_start, void *pa_end);
@@ -23,11 +24,27 @@ struct {
   struct run *freelist;
 } kmem;
 
+struct {
+  struct spinlock lock;
+  struct vm_area_struct vma[NVMA];
+  struct vm_area_struct head;
+} mmap;
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
   freerange(end, (void*)PHYSTOP);
+
+  initlock(&mmap.lock, "mmap");
+  mmap.head.vm_next = &mmap.head;
+  mmap.head.vm_prev = &mmap.head;
+  for (int i = 0; i < NVMA; i++) {
+    mmap.head.vm_next->vm_prev = &mmap.vma[i];
+    mmap.vma[i].vm_next = mmap.head.vm_next;
+    mmap.head.vm_next = &mmap.vma[i];
+    mmap.vma[i].vm_prev = &mmap.head;
+  }
 }
 
 void
@@ -79,4 +96,27 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+struct vm_area_struct *vm_area_alloc() {
+  struct vm_area_struct *vma;
+  acquire(&mmap.lock);
+  vma = mmap.head.vm_next;
+  if (vma != &mmap.head) {
+    mmap.head.vm_next = vma->vm_next;
+    vma->vm_next->vm_prev = &mmap.head;
+    release(&mmap.lock);
+    return vma;
+  }
+  release(&mmap.lock);
+  return 0;
+}
+
+void vm_area_free(struct vm_area_struct *vma) {
+  acquire(&mmap.lock);
+  mmap.head.vm_next->vm_prev = vma;
+  vma->vm_next = mmap.head.vm_next;
+  mmap.head.vm_next = vma;
+  vma->vm_prev = &mmap.head;
+  release(&mmap.lock);
 }

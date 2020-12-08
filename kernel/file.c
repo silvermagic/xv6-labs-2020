@@ -12,6 +12,7 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "fcntl.h"
 
 struct devsw devsw[NDEV];
 struct {
@@ -180,3 +181,49 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+int filemap_nopage(struct vm_area_struct *vma, uint64 vaddr, uint64 pgaddr) {
+  struct file *f = vma->file;
+  if(f->type != FD_INODE)
+    return -1;
+
+  ilock(f->ip);
+  uint offset = vaddr - vma->vm_start;
+  if (offset > f->ip->size) {
+    iunlock(f->ip);
+    return -1;
+  }
+  uint n = f->ip->size - offset;
+  if (n > PGSIZE)
+    n = PGSIZE;
+  if(readi(f->ip, 0, pgaddr, offset, n) != n) {
+    iunlock(f->ip);
+    return -1;
+  }
+  iunlock(f->ip);
+  return 0;
+}
+
+int filemap_sync(struct vm_area_struct *vma, uint64 vaddr, uint64 pgaddr) {
+  struct file *f = vma->file;
+  if(f->type != FD_INODE)
+    return -1;
+
+  ilock(f->ip);
+  uint offset = vaddr - vma->vm_start;
+  if (offset > f->ip->size) {
+    iunlock(f->ip);
+    return -1;
+  }
+  uint n = f->ip->size - offset;
+  if (n > PGSIZE)
+    n = PGSIZE;
+  begin_op();
+  if(writei(f->ip, 0, pgaddr, offset, n) != n) {
+    iunlock(f->ip);
+    end_op();
+    return -1;
+  }
+  iunlock(f->ip);
+  end_op();
+  return 0;
+}
